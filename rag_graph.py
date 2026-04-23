@@ -1,6 +1,10 @@
 import os
 from typing import TypedDict, Annotated, List
 import operator
+import requests
+from datetime import datetime
+import  json
+from pathlib import Path
 
 from langchain_community.document_loaders import DirectoryLoader, PyMuPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -9,15 +13,14 @@ from langchain_chroma import Chroma
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.tools import tool
-# from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.sqlite import SqliteSaver  # 新增：替换 InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import interrupt, Command
+from langgraph.errors import GraphInterrupt
 
 # 新增：免费网页搜索工具
 from ddgs import DDGS
 from bs4 import BeautifulSoup
-import requests
-from datetime import datetime
-import  json
+
 
 # ================== 配置 ==================
 DATA_DIR = "./my_knowledge"
@@ -28,6 +31,31 @@ SESSIONS_FILE = "./sessions.json"   # 新增：会话索引文件
 
 LLM_MODEL = "qwen3:14b"
 EMBEDDING_MODEL = "qwen3-embedding:latest"
+
+# ================== prompt设定 ==================
+SUMMARY_PROMPT_01 ="prompts/summary_conversation_prompt_01.txt"
+SUMMARY_PROMPT_02 ="prompts/summary_conversation_prompt_02.txt"
+SUMMARY_PROMPT_03 ="prompts/generate_summary_to_save.txt"
+ANSWER_PROMPT = "prompts/answer_node.txt"
+FEEDBACK_PROMPT = "prompts/feedback_node.txt"
+
+# ================== 工具设定 ==================
+def is_meaningless_input(text: str) -> bool:
+    """判断输入是否没有实际意义"""
+    if len(text) <= 1:  # 单个字符
+        return True
+
+    # 只包含标点符号的情况
+    import string
+    if all(c in string.punctuation + "，。！？；：（）【】「」" for c in text):
+        return True
+
+    # 太短且常见无意义词（可自行扩展）
+    meaningless = {"嗯", "哦", "啊", "好", "行", "可以", "是的", "恩", "嘿", "hello", "hi"}
+    if text.lower() in meaningless or text in meaningless:
+        return True
+
+    return False
 # ================== 对话内容的本地化存储 ==================
 def load_sessions():
     """加载 sessions.json，如果不存在则返回空列表"""
@@ -60,7 +88,6 @@ def save_session(session_id: str, summary: str):
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
 
-    print(f"sessions:{sessions}")
     # 按更新时间倒序排序
     sessions.sort(key=lambda x: x["updated_at"], reverse=True)
 
@@ -115,7 +142,12 @@ class AgentState(TypedDict):
     messages: Annotated[List, operator.add]
     context: str
     needs_web_search: bool  # 新增：是否需要上网搜索
+    next:str # 新增：下一步动作
     summary: str = ""  # 新增：对话总结（可以是累积的 running summary）
+    question: str
+    # 新增字段（用于人工反馈循环）
+    feedback: str | None  # 人工输入的改善点
+    revision_count: int  # 防止无限循环，可选
 
 
 # ================== 本地 LLM ==================
@@ -137,20 +169,13 @@ def retrieve_node(state: AgentState):
     # 简单判断：如果检索内容太短或为空，则需要上网
     needs_web = len(context.strip()) < 100  # 可根据实际情况调整阈值
 
-    return {"context": context, "needs_web_search": needs_web}
-
-
-def decide_node(state: AgentState):
-    """决策节点：决定是否调用网页搜索"""
-    if state.get("needs_web_search", False):
-        return "web_search"
-    else:
-        return "answer"
+    return {"context": context, "needs_web_search": needs_web,"question":question,\
+            "next": "web_search" if needs_web else "answer"}
 
 
 def web_search_node(state: AgentState):
     """调用网页搜索"""
-    question = state["messages"][-1].content
+    question = state.get("question")
     web_context = web_search_tool.invoke(question)
     # 合并本地 + 网页上下文
     combined_context = state.get("context", "") + "\n\n=== 网页搜索结果 ===\n" + web_context
@@ -158,34 +183,123 @@ def web_search_node(state: AgentState):
 
 def answer_node(state: AgentState):
     context = state.get("context", "")
-    question = state["messages"][-1].content
+    question = state.get("question")
 
-    prompt = f"""你是一个准确的助手。请优先使用提供的上下文回答问题。
-如果上下文来自网页搜索，请注明“根据最新网络信息”。
-
-以下是之前的对话总结（如果有）：
-{state.get("summary", "无")}
-
-上下文：
-{context}
+    existing_summary=state.get("summary", "无")
 
 
-上下文：
-{context}
+    prompt_path = Path(ANSWER_PROMPT)
+    summary_prompt_template = prompt_path.read_text(encoding="utf-8").strip()
+    prompt = summary_prompt_template.format(existing_summary=existing_summary, context=context,question=question)
 
-问题：{question}
+    response = llm.invoke([HumanMessage(content=prompt)])
+    return {"messages": [AIMessage(content=response.content)],"question":question}
 
-请用中文回答，并标注主要来源："""
+#
+def human_review(state: AgentState):
+    """人工审查节点：在这里中断，等待人工输入"""
+    last_answer = state["messages"][-1].content if state["messages"] else "（无回答）"
+    current_question = state.get("question", "（未知问题）")
+    revision_count = state.get("revision_count", 0)
+
+    # ================== 打印清晰的人工审查提示 ==================
+    print("\n" + "=" * 80)
+    print("🔍【人工审查模式】")
+    print("=" * 80)
+    print(f"📌 **当前问题**：{current_question}")
+    print("\n🤖 AI 的回答：")
+    print("-" * 60)
+    print(last_answer .strip())
+    print("-" * 60)
+    print("\n💡 请审查上面的回答是否满意？")
+    print("操作说明：")
+    print("   • 输入 '满意'、'approve'、'yes' 或直接回车  → 通过审查")
+    print("   • 输入 '不满意: 你的改善建议'             → 要求AI修改")
+    print("     示例：不满意: 回答太简短，请添加更多细节和具体例子")
+    print("   • 输入 'skip' 或 '跳过'                    → 直接跳过审查进入总结")
+
+    # 构建清晰的 payload（全部展示给人工）
+    interrupt_payload = {
+        "task": "review_answer",
+        "question": current_question,
+        "answer": last_answer,
+        "revision_count": revision_count,
+        "max_revisions": 3,
+        "instruction": (
+            "请输入以下之一：\n"
+            "• 'approve' 或 '满意' 或直接回车 → 通过审查\n"
+            "• 'skip' 或 '跳过' → 跳过审查\n"
+            "• '不满意: 你的具体改善建议' → 要求AI修改（推荐）"
+        )
+    }
+
+    # ================== 执行中断 ==================
+    raw_decision = interrupt(interrupt_payload)
+
+    # 安全提取人工输入（支持 str / dict / Message 等常见情况）
+    if isinstance(raw_decision, dict):
+        decision = raw_decision.get("response") or str(raw_decision)
+    elif hasattr(raw_decision, "content"):  # AIMessage / HumanMessage
+        decision = raw_decision.content
+    else:
+        decision = str(raw_decision)
+
+    decision = decision.strip()
+
+    # === 决策逻辑 ===
+    decision_lower = decision.lower()
+
+    # 通过审查（包括空输入视为 approve）
+    if (not decision or
+            decision_lower in ["approve", "yes", "y", "满意", "好", "通过", "ok"] or
+            revision_count >= 3):
+
+        if revision_count >= 3:
+            print("已达到最大修改次数（3次），强制结束审查")  # 仅调试用
+
+        # 决定下一个节点
+        next_node = "summarize" if len(state.get("messages", [])) >= 10 else END
+        return Command(goto=next_node, update={
+            "feedback": None,
+            "revision_count": 0
+        })
+
+    # 跳过审查
+    if decision_lower in ["skip", "跳过"]:
+        return Command(goto="retrieve", update={
+            "feedback": None,
+            "revision_count": 0
+        })
+
+    # 不满意 → 提取反馈
+    feedback = decision
+    if ":" in decision:
+        feedback = decision.split(":", 1)[1].strip()
+    elif "不满意" in decision or "dissatisfied" in decision_lower:
+        feedback = decision.replace("不满意", "").replace("dissatisfied", "").strip()
+
+    # 返回修改请求 + 计数 + 跳转到反馈/修改节点
+    return Command(goto="feedback_node", update={
+        "feedback": feedback,
+        "context": last_answer,  # 可选：把原回答也存下来
+        "revision_count": revision_count + 1
+    })
+
+
+
+def feedback_node(state: AgentState):
+    context = state.get("context", "")
+    question = state.get("question")
+    existing_summary = state.get("summary", "无")
+    feedback = state.get("feedback")
+
+    prompt_path = Path(FEEDBACK_PROMPT)
+    summary_prompt_template = prompt_path.read_text(encoding="utf-8").strip()
+    prompt = summary_prompt_template.format(existing_summary=existing_summary, context=context, question=question, feedback=feedback)
 
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"messages": [AIMessage(content=response.content)]}
 
-def should_summarize(state: AgentState):
-    """决策：是否需要总结"""
-    # 每 5 轮对话（大致 10 条消息）总结一次，可根据实际情况调
-    if len(state["messages"]) >= 10 and len(state["messages"]) % 2 == 0:  # 偶数消息时检查
-        return "summarize"
-    return "retrieve"  # 或直接进入正常流程
 
 def summarize_conversation(state: AgentState):
     """每隔一定轮次对历史进行总结，并压缩 messages"""
@@ -196,21 +310,21 @@ def summarize_conversation(state: AgentState):
     if len(messages) < 10:  # 可调整阈值，例如 len(messages) // 2 >= 5
         return {"summary": existing_summary}  # 不总结，直接返回
 
-    # 构建总结 prompt
-    if existing_summary:
-        summary_prompt = (
-            f"这是到目前为止的对话总结：{existing_summary}\n\n"
-            "请基于下面的新消息，更新并扩展这个总结。保持简洁但保留关键事实、用户偏好和重要上下文。\n"
-            "新消息：\n"
-        )
-    else:
-        summary_prompt = "请为下面的对话创建一个简洁的总结，突出关键点、用户需求和重要信息：\n"
-
     # 把所有消息转为字符串
     conversation = "\n".join([f"{msg.type}: {msg.content}" for msg in messages])
+    # 构建总结 prompt
+    if existing_summary:
+        prompt_path = Path(SUMMARY_PROMPT_01)
+        summary_prompt_template=prompt_path.read_text(encoding="utf-8").strip()
+        summary_prompt =summary_prompt_template.format(existing_summary=existing_summary,conversation=conversation)
+    else:
+        prompt_path = Path(SUMMARY_PROMPT_02)
+        summary_prompt_template = prompt_path.read_text(encoding="utf-8").strip()
+        summary_prompt = summary_prompt_template.format(conversation=conversation)
+
 
     # 调用 LLM 生成新总结
-    summary_message = HumanMessage(content=summary_prompt + conversation)
+    summary_message = HumanMessage(content=summary_prompt)
     response = llm.invoke([summary_message])  # 或用更强的 prompt
 
     new_summary = response.content.strip()
@@ -231,13 +345,14 @@ def build_rag_graph(checkpointer=None):
     workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("web_search", web_search_node)
     workflow.add_node("answer", answer_node)
-    workflow.add_node("summarize", summarize_conversation)  # 新增总结节点
+    workflow.add_node("human_review",human_review)
+    workflow.add_node("feedback_node", feedback_node)
+    workflow.add_node("summarize", summarize_conversation)
     workflow.set_entry_point("retrieve")
 
-    # 条件分支：检索后判断是否需要上网
     workflow.add_conditional_edges(
         "retrieve",
-        decide_node,
+        lambda state: state.get("next"),
         {
             "web_search": "web_search",
             "answer": "answer"
@@ -245,14 +360,8 @@ def build_rag_graph(checkpointer=None):
     )
 
     workflow.add_edge("web_search", "answer")
-    # 添加条件边
-    workflow.add_conditional_edges(
-        "answer",  # 在回答完后判断是否总结（推荐放在 answer 之后）
-        lambda state: "summarize" if len(state["messages"]) >= 10 else END,  # 简单示例
-        {"summarize": "summarize", END: END}
-    )
-
-    # 总结完成后回到 END 或继续
+    workflow.add_edge("answer", "human_review")
+    workflow.add_edge("feedback_node", "human_review")
     workflow.add_edge("summarize", END)
 
     return workflow.compile(checkpointer=checkpointer)
@@ -261,18 +370,51 @@ def generate_summary_to_save(current_state,session_id):
     conversation_text = "\n".join(
         [f"{m.type}: {m.content}" for m in current_state.get("messages", [])[-10:]])
 
-    summary_prompt = f"""请为下面的对话生成一个简短的总结说明（控制在80字以内），适合作为会话标题的描述：
-                       {conversation_text}
-                       要求：突出主题、主要问题或番号相关内容，用中文。"""
+    prompt_path = Path(SUMMARY_PROMPT_03)
+    summary_prompt_template = prompt_path.read_text(encoding="utf-8").strip()
+    summary_prompt = summary_prompt_template.format(conversation_text=conversation_text)
 
     try:
         summary_response = llm.invoke([HumanMessage(content=summary_prompt)])
         short_summary = summary_response.content.strip()
-        print(f"short_summary:{short_summary}")
         save_session(session_id, short_summary)
         print(f"💾 会话已保存 | ID: {session_id} | 总结: {short_summary[:80]}...")
     except Exception as e:
         print(f"❌ 生成总结失败: {e}")
+
+
+def run_graph_with_human_review(graph, inputs, config):
+    """支持多轮 interrupt 的流式运行"""
+    command = inputs  # 第一次用原始 inputs，之后用 Command(resume=...)
+
+    while True:
+        final_answer = ""
+        interrupted = False
+
+        for chunk in graph.stream(command, config=config, stream_mode="updates"):
+            # 检测到 interrupt 信号
+            if "__interrupt__" in chunk:
+                interrupted = True
+                interrupt_obj = chunk["__interrupt__"][0]  # 取第一个 Interrupt 对象
+                payload = interrupt_obj.value  # 就是你传给 interrupt() 的 dict
+
+                user_input = input("\n>>> 你的决策：").strip()
+                command = Command(resume={"response": user_input})
+                break
+            # 正常节点的输出，提取消息内容流式打印
+            for node_name, update in chunk.items():
+                if isinstance(update, dict):
+                    msgs = update.get("messages", [])
+                    for msg in msgs:
+                        if hasattr(msg, "content") and msg.content:
+                            final_answer += msg.content
+
+        if not interrupted:
+            break
+
+    return final_answer
+
+
 
 # ================== 运行 ==================
 if __name__ == "__main__":
@@ -305,18 +447,41 @@ if __name__ == "__main__":
                 continue
 
             # ================== 选择或创建 session_id ==================
-            if user_input.lower() == "new" or not user_input:
-                # 创建新会话（自动生成或手动输入）
+            session_summary =""
+            if user_input.lower() == "new" or not user_input.strip():
+                # === 创建新会话 ===
                 session_id = input("请输入本次会话的番号 / ID（例如：AV-12345、项目-讨论1）：").strip()
+
                 if not session_id:
                     session_id = f"session_{uuid.uuid4().hex[:8]}"
+
+                print(f"已创建新会话：{session_id}")
+
             else:
-                session_id = user_input  # 用户直接输入的 session_id
+                # === 使用已有会话 ===
+                session_id = user_input.strip()
+
+                # 关键判断：检查这个 session 是否已经存在
+                sessions = load_sessions()  # 你现有的加载所有 session 的函数
+                session_find_flag =False
+                for each_session in sessions:
+                    if each_session['session_id'] == session_id:
+                        session_summary =each_session["summary"]
+                        session_find_flag =True
+                        break
+
+                if not session_find_flag:
+                    print(f"❌ 错误：会话 ID '{session_id}' 不存在！")
+                    print("提示：输入 'new' 创建新会话，或输入 'list' 查看已有会话。")
+                    continue  # 跳过本次循环，不往下执行
+
+                print(f"已加载现有会话：{session_id}")
 
             config = {"configurable": {"thread_id": session_id}}
 
             # 尝试加载已有会话的历史
             state_snapshot = graph.get_state(config)
+
             if state_snapshot and state_snapshot.values and state_snapshot.values.get("messages"):
                 print(f"\n✅ 已加载历史会话 → {session_id}")
                 # 可选：显示最近几条消息
@@ -329,63 +494,37 @@ if __name__ == "__main__":
 
             # ================== 开始对话循环（支持多轮）==================
             while True:
-                user_msg = input("\n👤 你：").strip()
-                if user_msg.lower() in ["exit", "quit", "q", "返回", "back"]:
-                    current_state = graph.get_state(config).values
-                    current_summay=current_state.get("summary", "")
-                    print(f"current_state:{current_state}")
-                    if current_summay:
-                        save_session(session_id,current_summay)
-                    else:
-                        generate_summary_to_save(current_state, session_id)
+                return_flag =False
+                while True:
+                    user_msg = input("\n👤 你：").strip()
+                    # 1. 判空
+                    if not user_msg:
+                        print("❌ 输入不能为空，请输入你的问题。")
+                        continue
+                    # 2. 判断是否退出
+                    if user_msg.lower() in ["exit", "quit", "q", "返回", "back"]:
+                        current_state = graph.get_state(config).values
+                        current_summay=current_state.get("summary", "")
 
-                    break  # 返回到选择会话界面
+                        if current_summay:
+                            save_session(session_id,current_summay)
+                        elif session_summary:
+                            save_session(session_id,session_summary)
+                        else:
+                            generate_summary_to_save(current_state, session_id)
 
-                inputs = {"messages": [HumanMessage(content=user_msg)], "needs_web_search": False}
+                        return_flag = True
+                    if not return_flag and is_meaningless_input(user_msg):
+                        print("❌ 请输入有意义的问题或指令。")
+                        continue
+                    break
+                if return_flag:
+                        break
 
-                # final_answer = ""
-                # for output in graph.stream(inputs, config=config, stream_mode="values"):
-                #     if "answer" in output or "messages" in output.get("values", {}):
-                #         # 取出最新的 AI 回复
-                #         messages = output.get("values", {}).get("messages",
-                #                                                 []) if "values" in output else output.get(
-                #             "messages", [])
-                #         if messages and isinstance(messages[-1], AIMessage):
-                #             final_answer = messages[-1].content
-                #
-                # if final_answer:
-                #     print(f"\n🤖 AI：{final_answer}")
+                inputs = {"messages": [HumanMessage(content=user_msg)], "needs_web_search": False,\
+                          "summary":session_summary,"feedback":None,"revision_count":0}
+
+                final_answer=run_graph_with_human_review(graph, inputs, config)
 
                 print("\n🤖 AI：", end="", flush=True)  # 先打印前缀，不换行
-
-                final_answer = ""
-
-                for chunk in graph.stream(inputs, config=config, stream_mode="messages"):
-                    # chunk 的结构通常是 (message_chunk, metadata)
-                    if isinstance(chunk, tuple) and len(chunk) == 2:
-                        message, metadata = chunk
-                        if hasattr(message, "content") and message.content:
-                            # 实时打印每个 token / 片段
-                            print(message.content, end="", flush=True)
-                            final_answer += message.content
-
-                # # ================== 每次回答后更新总结（推荐放在这里）==================
-                # # 你可以在 answer_node 里返回 summary，或者在这里调用 summarize_conversation 逻辑
-                # # 为了简单，这里每次对话后用 LLM 生成一次简短总结
-                # current_state = graph.get_state(config).values
-                # conversation_text = "\n".join(
-                #     [f"{m.type}: {m.content}" for m in current_state.get("messages", [])[-10:]])
-                #
-                # summary_prompt = f"""请为下面的对话生成一个简短的总结说明（控制在80字以内），适合作为会话标题的描述：
-                #    {conversation_text}
-                #    要求：突出主题、主要问题或番号相关内容，用中文。"""
-                #
-                # try:
-                #     summary_response = llm.invoke([HumanMessage(content=summary_prompt)])
-                #     short_summary = summary_response.content.strip()
-                #     title = short_summary[:60]  # 可作为标题
-                #
-                #     save_session(session_id, short_summary, title)
-                #     print(f"💾 会话已保存 | ID: {session_id} | 总结: {short_summary[:80]}...")
-                # except:
-                #     pass  # LLM 出错时不影响主流程
+                print(final_answer)
