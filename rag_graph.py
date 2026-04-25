@@ -5,6 +5,7 @@ import requests
 from datetime import datetime
 import  json
 from pathlib import Path
+import sqlite3
 
 from langchain_community.document_loaders import DirectoryLoader, PyMuPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -14,6 +15,7 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite import SqliteSaver
+
 from langgraph.types import interrupt, Command
 from langgraph.errors import GraphInterrupt
 
@@ -56,7 +58,27 @@ def is_meaningless_input(text: str) -> bool:
         return True
 
     return False
+
 # ================== 对话内容的本地化存储 ==================
+def delete_session(checkpointer,session_id: str) -> bool:
+    """删除某个会话的所有记录"""
+    # 1. 删除 LangGraph 的 checkpoint（状态历史）
+    try:
+        checkpointer.delete_thread(thread_id=session_id)
+    except Exception as e:
+        print(f"删除 checkpoint 时出错: {e}")
+
+    # 2. 删除你自己维护的 sessions 列表（如果有）
+    sessions = load_sessions()
+    new_sessions = [s for s in sessions if s['session_id'] != session_id]
+
+    if len(new_sessions) != len(sessions):
+        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_sessions, f, ensure_ascii=False, indent=2)
+        return True
+    return False
+
+
 def load_sessions():
     """加载 sessions.json，如果不存在则返回空列表"""
     if os.path.exists(SESSIONS_FILE):
@@ -202,40 +224,16 @@ def human_review(state: AgentState):
     current_question = state.get("question", "（未知问题）")
     revision_count = state.get("revision_count", 0)
 
-    # ================== 打印清晰的人工审查提示 ==================
-    print("\n" + "=" * 80)
-    print("🔍【人工审查模式】")
-    print("=" * 80)
-    print(f"📌 **当前问题**：{current_question}")
-    print("\n🤖 AI 的回答：")
-    print("-" * 60)
-    print(last_answer .strip())
-    print("-" * 60)
-    print("\n💡 请审查上面的回答是否满意？")
-    print("操作说明：")
-    print("   • 输入 '满意'、'approve'、'yes' 或直接回车  → 通过审查")
-    print("   • 输入 '不满意: 你的改善建议'             → 要求AI修改")
-    print("     示例：不满意: 回答太简短，请添加更多细节和具体例子")
-    print("   • 输入 'skip' 或 '跳过'                    → 直接跳过审查进入总结")
-
     # 构建清晰的 payload（全部展示给人工）
     interrupt_payload = {
-        "task": "review_answer",
         "question": current_question,
         "answer": last_answer,
         "revision_count": revision_count,
-        "max_revisions": 3,
-        "instruction": (
-            "请输入以下之一：\n"
-            "• 'approve' 或 '满意' 或直接回车 → 通过审查\n"
-            "• 'skip' 或 '跳过' → 跳过审查\n"
-            "• '不满意: 你的具体改善建议' → 要求AI修改（推荐）"
-        )
     }
 
     # ================== 执行中断 ==================
     raw_decision = interrupt(interrupt_payload)
-
+    print(f"raw_decision:{raw_decision}")
     # 安全提取人工输入（支持 str / dict / Message 等常见情况）
     if isinstance(raw_decision, dict):
         decision = raw_decision.get("response") or str(raw_decision)
@@ -252,9 +250,9 @@ def human_review(state: AgentState):
     # 通过审查（包括空输入视为 approve）
     if (not decision or
             decision_lower in ["approve", "yes", "y", "满意", "好", "通过", "ok"] or
-            revision_count >= 3):
+            revision_count > 3):
 
-        if revision_count >= 3:
+        if revision_count > 3:
             print("已达到最大修改次数（3次），强制结束审查")  # 仅调试用
 
         # 决定下一个节点
@@ -280,8 +278,9 @@ def human_review(state: AgentState):
 
     # 返回修改请求 + 计数 + 跳转到反馈/修改节点
     return Command(goto="feedback_node", update={
+        "messages": [HumanMessage(content=feedback)],
         "feedback": feedback,
-        "context": last_answer,  # 可选：把原回答也存下来
+        "context": last_answer,
         "revision_count": revision_count + 1
     })
 
@@ -398,6 +397,22 @@ def run_graph_with_human_review(graph, inputs, config):
                 interrupt_obj = chunk["__interrupt__"][0]  # 取第一个 Interrupt 对象
                 payload = interrupt_obj.value  # 就是你传给 interrupt() 的 dict
 
+                # ================== 打印清晰的人工审查提示 ==================
+                print("\n" + "=" * 80)
+                print("🔍【人工审查模式】")
+                print("=" * 80)
+                print(f"📌 **当前问题**：{payload.get('question','')}")
+                print("\n🤖 AI 的回答：")
+                print("-" * 60)
+                print(payload.get('answer',''))
+                print("-" * 60)
+                print("\n💡 请审查上面的回答是否满意？")
+                print("操作说明：")
+                print("   • 输入 '满意'、'approve'、'yes' 或直接回车  → 通过审查")
+                print("   • 输入 '不满意:/dissatisfied: 你的改善建议'             → 要求AI修改")
+                print("     示例：不满意/dissatisfied: 回答太简短，请添加更多细节和具体例子")
+                print("   • 输入 'skip' 或 '跳过'                    → 直接跳过审查进入总结")
+
                 user_input = input("\n>>> 你的决策：").strip()
                 command = Command(resume={"response": user_input})
                 break
@@ -435,6 +450,7 @@ if __name__ == "__main__":
                 "• 输入 session_id（或番号）继续历史对话\n"
                 "• 输入 'new' 或直接回车创建新会话\n"
                 "• 输入 'list' 重新显示列表\n"
+                "• 输入 'del' 或 'delete' 删除会话\n"
                 "• 输入 'exit' / 'q' 退出\n"
                 "请输入："
             ).strip()
@@ -444,6 +460,17 @@ if __name__ == "__main__":
             elif user_input.lower() == "list":
                 sessions = load_sessions()
                 print_sessions(sessions)
+                continue
+            elif user_input.lower() in ["del", "delete", "rm"]:
+                del_id = input("请输入要删除的 session_id：").strip()
+                if not del_id:
+                    print("❌ 未输入 ID")
+                    continue
+
+                if delete_session(checkpointer,del_id):  # ← 调用下面写的删除函数
+                    print(f"✅ 已成功删除会话：{del_id}")
+                else:
+                    print(f"❌ 删除失败，会话 '{del_id}' 不存在")
                 continue
 
             # ================== 选择或创建 session_id ==================
@@ -525,6 +552,3 @@ if __name__ == "__main__":
                           "summary":session_summary,"feedback":None,"revision_count":0}
 
                 final_answer=run_graph_with_human_review(graph, inputs, config)
-
-                print("\n🤖 AI：", end="", flush=True)  # 先打印前缀，不换行
-                print(final_answer)

@@ -16,7 +16,6 @@ import hashlib
 DATA_DIR = "./my_knowledge"  # 你的 PDF 和 DOCX 文件夹
 PERSIST_DIR = "./chroma_db"  # 向量库保存路径（本地）
 
-LLM_MODEL = "qwen3.5:14b"  # 你下载的模型（仅作参考）
 EMBEDDING_MODEL = "qwen3-embedding:latest"  # 嵌入模型，必须提前 pull
 # 可以把这个缓存文件放在 DATA_DIR 外面或里面都行
 CACHE_FILE = "loaded_docs_cache.json"
