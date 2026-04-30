@@ -175,12 +175,10 @@ class AgentState(TypedDict):
 # ================== 本地 LLM ==================
 llm = ChatOllama(model=LLM_MODEL, temperature=0.3)
 
-retriever = get_retriever()
-
-
 # ================== 节点 ==================
 def retrieve_node(state: AgentState):
     question = state["messages"][-1].content
+    retriever = get_retriever()
     docs = retriever.invoke(question)
 
     context = "\n\n---\n\n".join([
@@ -269,12 +267,10 @@ def human_review(state: AgentState):
             "revision_count": 0
         })
 
-    # 不满意 → 提取反馈
-    feedback = decision
-    if ":" in decision:
-        feedback = decision.split(":", 1)[1].strip()
-    elif "不满意" in decision or "dissatisfied" in decision_lower:
-        feedback = decision.replace("不满意", "").replace("dissatisfied", "").strip()
+    if decision_lower.startswith("不满意：") or decision_lower.startswith("dissatisfied:"):
+        feedback = decision_lower.replace("不满意", "").replace("dissatisfied", "").strip()
+        if ":" in decision:
+            feedback = decision.split(":", 1)[1].strip()
 
     # 返回修改请求 + 计数 + 跳转到反馈/修改节点
     return Command(goto="feedback_node", update={
@@ -339,6 +335,7 @@ def summarize_conversation(state: AgentState):
 
 # ================== 构建 LangGraph ==================
 def build_rag_graph(checkpointer=None):
+    """rag_graph使用的chat图(有human_review人工干预)"""
     workflow = StateGraph(AgentState)
 
     workflow.add_node("retrieve", retrieve_node)
@@ -347,8 +344,8 @@ def build_rag_graph(checkpointer=None):
     workflow.add_node("human_review",human_review)
     workflow.add_node("feedback_node", feedback_node)
     workflow.add_node("summarize", summarize_conversation)
-    workflow.set_entry_point("retrieve")
 
+    workflow.set_entry_point("retrieve")
     workflow.add_conditional_edges(
         "retrieve",
         lambda state: state.get("next"),
@@ -357,7 +354,6 @@ def build_rag_graph(checkpointer=None):
             "answer": "answer"
         }
     )
-
     workflow.add_edge("web_search", "answer")
     workflow.add_edge("answer", "human_review")
     workflow.add_edge("feedback_node", "human_review")
@@ -538,7 +534,10 @@ if __name__ == "__main__":
                         elif session_summary:
                             save_session(session_id,session_summary)
                         else:
-                            generate_summary_to_save(current_state, session_id)
+                            if len(current_state.get("messages", []))!=0:
+                                generate_summary_to_save(current_state, session_id)
+                            else:
+                                print("❌ 未输入任何内容，会话不需要保存。")
 
                         return_flag = True
                     if not return_flag and is_meaningless_input(user_msg):

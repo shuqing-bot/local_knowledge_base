@@ -14,7 +14,7 @@
 - 多轮对话可按会话 ID 持久化，支持历史总结。
 - 并支持删除对话的功能。
 
-知识源主要来自 `my_knowledge/` 目录中的个人文档（docx/pdf/ppt/pptx/xlsx 等）。
+知识源主要来自 `my_knowledge/` 目录中的个人文档（docx/pdf/md 等）。
 
 ---
 
@@ -48,7 +48,6 @@ local_knowledge_base/
 ├─ my_knowledge/                   # 本地知识文档目录
 ├─ chroma_db/                      # 向量数据库持久化目录
 └─ chat_history/                   # 会话 checkpoint（SQLite）目录
-
 
 ```
 
@@ -162,9 +161,16 @@ python rag_graph.py
 ## 10. 备注
 
 - 若本地检索结果较少，系统会自动尝试联网搜索补充信息。
+- 目前的数据库建立的非常粗糙，个人想法是通过AI将各个类型的文件，进行总结，并自我提问的形式，全部转化为md文档。
+- 可以按照图书馆关于图书的分类方法，将对应文档进行一个大的分类。
 
 ---
 
 ## License
 
-当前仓库未显式提供许可证文件（`LICENSE`）。如需开源发布，建议补充许可证说明。
+MIT / Apache 2.0
+
+## Author
+ききよし zhimushuqing1993@gmail.com
+
+

@@ -1,0 +1,159 @@
+/*body { font-family: system-ui, sans-serif; background: #f0f2f5; margin: 0; }*/
+/* 整体页面居中 */
+body {
+    margin: 0;
+    padding: 0;
+    font-family: system-ui;
+    min-height: 100vh;                    /* 占满整个视口高度 */
+    display: flex;
+    justify-content: center;              /* 水平居中 */
+    align-items: center;                  /* 垂直居中 */
+    background: #f0f2f5;                  /* 页面背景色 */
+}
+/* 聊天容器 */
+.chat-container {
+    width: 90%;                           /* 响应式宽度 */
+    max-width: 1200px;                    /* 最大不要超过1200px（你原来1500太宽了） */
+    height: 85vh;                         /* 占屏幕85%高度，更舒适 */
+    max-height: 900px;                    /* 最大高度限制 */
+    margin: 0 auto;                       /* 配合flex居中 */
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;               /* 让内部可以弹性布局 */
+}
+header {
+    background: linear-gradient(135deg, #4f46e5, #6366f1, #7c3aed);  /* 炫酷渐变 */
+    color: white;
+    padding: 28px 20px;                    /* 显著增高 */
+    text-align: center;
+    font-size: 1.5em;                      /* 字体更大 */
+    font-weight: 700;                      /* 加粗 */
+    letter-spacing: 1px;                   /* 字间距 */
+    box-shadow: 0 4px 15px rgba(79, 70, 229, 0.4);  /* 向下投影 */
+    position: relative;                    /* 为特效做准备 */
+    overflow: hidden;
+}
+
+/* 增加炫酷光泽效果 */
+header::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 40%;
+    height: 60%;
+    background: rgba(255, 255, 255, 0.25);
+    transform: rotate(30deg);
+    animation: shine 6s infinite linear;
+    pointer-events: none;
+}
+
+/* 光泽动画 */
+@keyframes shine {
+    0%   { transform: translateX(-150%) rotate(30deg); }
+    15%  { transform: translateX(300%) rotate(30deg); }
+    100% { transform: translateX(300%) rotate(30deg); }
+}
+
+/* 可选：底部发光线 */
+header::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: linear-gradient(to right, transparent, rgba(255,255,255,0.8), transparent);
+}
+/* ==================== 聊天主区域 - 增加特效 ==================== */
+.chat-box {
+    flex: 1;                          /* 弹性占满剩余高度 */
+    padding: 24px 20px;
+    overflow-y: auto;
+    background:
+        linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);  /* 轻微渐变背景 */
+    background-attachment: fixed;
+    position: relative;
+}
+
+/*!* 增加毛玻璃/纹理感（可选更炫） *!*/
+/*.chat-box::before {*/
+/*    content: '';*/
+/*    position: absolute;*/
+/*    top: 0;*/
+/*    left: 0;*/
+/*    right: 0;*/
+/*    bottom: 0;*/
+/*    background: rgba(248, 250, 252, 0.6);*/
+/*    pointer-events: none;*/
+/*    z-index: 1;*/
+/*}*/
+
+/* 平滑滚动 + 美化滚动条 */
+.chat-box::-webkit-scrollbar {
+    width: 6px;
+}
+.chat-box::-webkit-scrollbar-thumb {
+    background: #94a3b8;
+    border-radius: 10px;
+}
+.chat-box::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+}
+/* ==================== 消息气泡 - 自动适配宽度 ==================== */
+.message {
+    margin: 12px 0;
+    padding: 13px 18px;
+    border-radius: 20px;
+    max-width: 78%;                    /* 最大宽度限制 */
+    width: fit-content;                /* 关键：根据内容自动收缩宽度 */
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    position: relative;
+    animation: messageFadeIn 0.3s ease-out forwards;   /* 进入动画 */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);        /* 轻微阴影 */
+}
+
+/* 用户消息（右边） */
+.user {
+    background: linear-gradient(135deg, #4f46e5, #6366f1);
+    color: white;
+    margin-left: auto;
+    border-bottom-right-radius: 6px;
+}
+
+/* 机器人消息（左边） */
+.bot {
+    background: #f1f5f9;
+    color: #1e2937;
+    margin-right: auto;
+    border-bottom-left-radius: 6px;
+}
+
+
+.input-area {
+    padding: 15px;
+    display: flex;
+    gap: 10px;
+    background: white;
+    border-top: 1px solid #e2e8f0;
+}
+input {
+    flex: 1;
+    padding: 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 9999px;
+    font-size: 1em;
+}
+button {
+    padding: 0 24px;
+    background: #4f46e5;
+    color: white;
+    border: none;
+    border-radius: 9999px;
+    cursor: pointer;
+}

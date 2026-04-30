@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>本地知识库聊天页面</title>
+    <link rel="stylesheet" href="/web/static/style.css">
+</head>
+<body>
+    <div class="chat-container">
+        <header>本地知识库聊天页面</header>
+
+        <div id="chat-box" class="chat-box"></div>
+
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="输入消息..." autocomplete="off">
+            <button onclick="sendMessage()">发送</button>
+        </div>
+    </div>
+
+    <script>
+        const chatBox = document.getElementById('chat-box');
+        const input = document.getElementById('user-input');
+        let currentSessionId = null; // 用于存储当前会话的 ID
+let currentAction = null; // 用于存储当前会话的 action
+        function addMessage(text, isUser) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = isUser ? 'message user' : 'message bot';
+            msgDiv.textContent = text;
+            chatBox.appendChild(msgDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function renderSessionList(sessions, total) {
+    if (total === 0 || !sessions || sessions.length === 0) {
+        addMessage("📭 目前没有任何历史会话。", false);
+        return;
+    }
+
+    let listText = `📜 历史对话列表（共 ${total} 个）\n\n`;
+
+    sessions.forEach((s, index) => {
+        listText += `${index + 1}. 【${s.session_id}】\n`;
+
+        // 显示 summary（支持换行更清晰）
+        const summaryLines = s.summary_short || s.summary;
+        listText += `   📝 ${summaryLines}\n`;
+
+        listText += `   🕒 ${s.updated_at}\n`;
+
+        if (s.message_count && s.message_count > 0) {
+            listText += `   💬 ${s.message_count} 条对话\n`;
+        }
+
+        listText += `\n`;   // 分隔每个会话
+    });
+
+    addMessage(listText, false);
+}
+
+
+// ====================== 独立删除函数 ======================
+async function deleteSession(sessionId) {
+    if (!sessionId) {
+        console.error("删除失败：sessionId 为空");
+        return { status: "error", reply: "sessionId 不能为空" };
+    }
+
+    try {
+        const res = await fetch('/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: "delete_session",
+                session_id: sessionId
+            })
+        });
+
+        if (!res.ok) {
+            throw new Error(`HTTP 错误: ${res.status}`);
+        }
+
+        const result = await res.json();
+        return result;                    // 返回后端的结果，方便调用处使用
+
+    } catch (err) {
+        console.error("删除会话请求失败", err);
+        return {
+            status: "error",
+            reply: "网络错误，删除请求发送失败"
+        };
+    }
+}
+    async function sendMessage() {
+        let text = input.value.trim();
+        if (!text) return;
+
+        addMessage(text, true);
+        input.value = '';
+
+        try {
+            const res = await fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: text,
+                    session_id: currentSessionId,
+                    action: currentAction, // 如果没有指定 action，则默认为 None
+                })
+            });
+
+            const data = await res.json();
+
+            // ================== 处理 "new" 指令 ==================
+            if (data.action === "request_new_session") {
+                addMessage(data.reply, false);   // 显示提示
+
+                // 弹出输入框让用户输入 session_id
+                const newId = prompt("请输入本次会话的番号 / ID：\n（留空自动生成）", "");
+
+                if (newId === null) {   // 用户点了取消
+                    addMessage("已取消创建新会话。", false);
+                    return;
+                }
+
+                const finalSessionId = newId.trim()
+                    ? newId.trim()
+                    : `session_${Math.random().toString(36).slice(2, 10)}`;
+
+
+                currentSessionId = finalSessionId;
+                addMessage(`✅ 已创建并同步新会话：${finalSessionId}`, false);
+            return;
+            }
+            // ================== 处理会话列表 ==================
+            if (data.action === "show_session_list") {
+                addMessage(data.reply, false);
+                renderSessionList(data.sessions, data.total);
+                return;
+            }
+            // ================== 处理删除会话 ==================
+        if (data.action === "delete_session") {
+            addMessage(data.reply, false);
+
+            const deleteId = prompt("请输入需要删除的会话番号", "");
+            if (deleteId === null) {
+                addMessage("已取消删除会话。", false);
+                return;
+            }
+
+            const targetId = deleteId.trim();
+            if (targetId) {
+        // 调用封装好的函数
+        const deleteresult = await deleteSession(targetId);
+        if (deleteresult.status === "ok") {
+            addMessage(deleteresult.reply , false);
+        } else {
+            addMessage(deleteresult.reply , false);
+        }
+    }
+    return;
+        }
+
+        // ================== 正常回复 ==================
+        if (data && typeof data === 'object') {
+            currentSessionId = data.session_id || currentSessionId;
+            currentAction = null;
+
+            // 安全地获取 reply
+            const replyText = data.reply || data.message || "✅ 已收到回复";
+            addMessage(replyText, false);
+        } else {
+            addMessage("✅ 收到回复，但格式异常", false);
+        }
+
+        } catch (e) {
+             console.error("请求异常:", e);   // 建议打印到控制台
+        const error_msg = `网络错误，请检查后端是否运行: ${e.message || e}`;
+        addMessage(error_msg, false);
+        }
+    }
+
+        // 回车发送
+        input.addEventListener('keypress', e => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // 页面加载时的欢迎语 + 操作提示
+    window.onload = () => {
+        // 欢迎语 + 操作提示（多行）
+        const tips = `你好！我是本地知识库聊天助手，有什么可以帮你？😊
+        操作提示：
+        • 输入 session_id（或番号）继续历史对话
+        • 输入 'new' 或直接回车创建新会话
+        • 输入 'list' 重新显示列表
+        • 输入 'del' 删除会话
+        • 输入 'quit' 退出`;
+
+        addMessage(tips, false);
+    };
+    </script>
+</body>
+</html>

@@ -11,3 +11,9 @@ numpy
 ddgs
 beautifulsoup4
 langgraph-checkpoint-sqlite
+fastapi
+uvicorn[standard]
+jinja2
+starlette>=0.45.0,<1.0.0
+fastapi>=0.115.0
+aiofiles
