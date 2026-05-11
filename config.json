@@ -1,0 +1,43 @@
+{
+  "paths": {
+    "DATA_DIR": "./my_knowledge",
+    "PERSIST_DIR": "./chroma_db",
+    "CHECKPOINT_FILE": "chat_history",
+    "CHECKPOINT_DB": "chat_history/chat_checkpoints.db",
+    "SESSIONS_FILE": "./sessions.json",
+    "PROMPT_DIR": "prompts",
+   "WEB_DIR": "./web/templates"
+  },
+  "models": {
+    "LLM_MODEL": "deepseek-r1:8b",
+    "EMBEDDING_MODEL": "qwen3-embedding:latest"
+  },
+  "prompts": {
+    "SUMMARY_PROMPT_01": "summary_conversation_prompt_01.txt",
+    "SUMMARY_PROMPT_02": "summary_conversation_prompt_02.txt",
+    "SUMMARY_PROMPT_03": "generate_summary_to_save.txt",
+    "ANSWER_PROMPT": "answer_node.txt",
+    "FEEDBACK_PROMPT": "feedback_node.txt"
+  },
+  "parameters": {
+  "CHUNK_SIZE": 700,
+  "CHUNK_OVERLAP": 100,
+
+  "TOP_K": 5,
+  "SCORE_THRESHOLD": 0.65,
+
+  "MAX_HISTORY_TOKENS": 6000,
+  "SUMMARY_INTERVAL": 6,
+
+  "TEMPERATURE": 0.7,
+  "MAX_NEW_TOKENS": 2048,
+
+  "NUM_CTX": 16384,
+  "TOP_P": 0.9,
+  "REPEAT_PENALTY": 1.1,
+  "NUM_PREDICT": 2048,
+
+  "DEBUG": false,
+  "LOG_LEVEL": "INFO"
+}
+}

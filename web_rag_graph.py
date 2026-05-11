@@ -24,26 +24,70 @@ from langgraph.errors import GraphInterrupt
 # 新增：免费网页搜索工具
 from ddgs import DDGS
 from bs4 import BeautifulSoup
+from config import Config
+
+# ================== 本地 LLM ==================
+setting_config = Config()
+def get_llm():
+    return ChatOllama(
+        model=setting_config.models["LLM_MODEL"],
+        temperature=setting_config.params["TEMPERATURE"],
+        num_ctx=setting_config.params["NUM_CTX"],
+        num_predict=setting_config.params.get("NUM_PREDICT", setting_config.params["MAX_NEW_TOKENS"]),
+        top_p=setting_config.params["TOP_P"],
+        repeat_penalty=setting_config.params["REPEAT_PENALTY"]
+    )
+
+llm = get_llm()
 
 
 # ================== 配置 ==================
-DATA_DIR = "./my_knowledge"
-PERSIST_DIR = "./chroma_db"
-CHECKPOINT_FILE = "chat_history"
-CHECKPOINT_DB =os.path.join(CHECKPOINT_FILE,"chat_checkpoints.db")
-SESSIONS_FILE = "./sessions.json"   # 新增：会话索引文件
+CHECKPOINT_FILE = setting_config.paths["CHECKPOINT_FILE"]
+CHECKPOINT_DB =setting_config.paths["CHECKPOINT_DB"]
+SESSIONS_FILE = setting_config.paths["SESSIONS_FILE"]
+SCORE_THRESHOLD = setting_config.params["SCORE_THRESHOLD"]
+TOP_K = setting_config.params["TOP_K"]
+SUMMARY_INTERVAL=setting_config.params.get("SUMMARY_INTERVAL",10)
 
-LLM_MODEL = "qwen3:14b"
-EMBEDDING_MODEL = "qwen3-embedding:latest"
 
 # ================== prompt设定 ==================
-SUMMARY_PROMPT_01 ="prompts/summary_conversation_prompt_01.txt"
-SUMMARY_PROMPT_02 ="prompts/summary_conversation_prompt_02.txt"
-SUMMARY_PROMPT_03 ="prompts/generate_summary_to_save.txt"
-ANSWER_PROMPT = "prompts/answer_node.txt"
-FEEDBACK_PROMPT = "prompts/feedback_node.txt"
+SUMMARY_PROMPT_01 =setting_config.prompts["SUMMARY_PROMPT_01"]
+SUMMARY_PROMPT_02 =setting_config.prompts["SUMMARY_PROMPT_02"]
+SUMMARY_PROMPT_03 =setting_config.prompts["SUMMARY_PROMPT_03"]
+ANSWER_PROMPT = setting_config.prompts["ANSWER_PROMPT"]
+FEEDBACK_PROMPT = setting_config.prompts["FEEDBACK_PROMPT"]
 
-    # ================== 加载会话记录 ==================
+# ================== 知识库设定 ==================
+def initialize_vectorstore():
+    """初始化向量数据库，只需调用一次"""
+    embeddings = OllamaEmbeddings(model=setting_config.models["EMBEDDING_MODEL"])
+
+    vectorstore = Chroma(
+        persist_directory=setting_config.paths["PERSIST_DIR"],  # 从config读取
+        embedding_function=embeddings,
+        collection_name="my_local_knowledge"
+    )
+
+    doc_count = vectorstore._collection.count() if hasattr(vectorstore, '_collection') else 0
+    print(f"✅ 知识库加载完成，共 {doc_count} 个文档片段")
+
+    return vectorstore
+
+vectorstore = initialize_vectorstore()
+
+def get_retriever():
+    """获取检索器"""
+    return vectorstore.as_retriever(
+        search_type="similarity_score_threshold",  # 强烈建议使用这个
+        search_kwargs={
+            "k": TOP_K,
+            "score_threshold": SCORE_THRESHOLD,
+        }
+    )
+
+
+
+# ================== 加载会话记录 ==================
 def load_sessions():
     """加载 sessions.json，如果不存在则返回空列表"""
     if os.path.exists(SESSIONS_FILE):
@@ -111,15 +155,7 @@ async def generate_summary_to_save(message_list, session_id):
         print(f"💾 会话已保存 | ID: {session_id} | 总结: {short_summary[:80]}...")
     except Exception as e:
         print(f"❌ 生成总结失败: {e}")
-# ================== 加载本地知识库 ==================
-def get_retriever():
-    embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
-    vectorstore = Chroma(
-        persist_directory=PERSIST_DIR,
-        embedding_function=embeddings,
-        collection_name="my_local_knowledge"
-    )
-    return vectorstore.as_retriever(search_kwargs={"k": 6})
+
 
 
 # ================== 免费网页搜索工具 ==================
@@ -152,9 +188,6 @@ class AgentState(TypedDict):
     revision_count: int  # 防止无限循环，可选
 
 
-# ================== 本地 LLM ==================
-llm = ChatOllama(model=LLM_MODEL, temperature=0.3)
-
 # ================== 节点 ==================
 async def retrieve_node(state: AgentState):
     """检索本地知识库（异步版本）"""
@@ -167,13 +200,24 @@ async def retrieve_node(state: AgentState):
         # 改成异步调用
         docs = await retriever.ainvoke(question)
 
+        # 获取上下文
         context = "\n\n---\n\n".join([
             f"来源: {doc.metadata.get('source', '未知')}\n{doc.page_content}"
             for doc in docs
-        ])
+        ]) if docs else ""
 
-        # 简单判断：如果检索内容太短或为空，则需要上网
-        needs_web = len(context.strip()) < 100
+        # 看最高分或平均分是否达标
+        if not docs:
+            needs_web = True
+        else:
+            scores = [doc.metadata.get('score', 0) for doc in docs]
+            max_score = max(scores) if scores else 0
+            avg_score = sum(scores) / len(scores) if scores else 0
+
+            needs_web = max_score < SCORE_THRESHOLD or avg_score < SCORE_THRESHOLD - 0.1
+
+        return {"context": context, "needs_web_search": needs_web, "question": question, \
+                "next": "web_search" if needs_web else "answer"}
     else:
         question = state.get("question", "")
         needs_web = state.get("needs_web_search", False)

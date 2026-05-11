@@ -133,15 +133,52 @@ python rag_graph.py
 
 ---
 
-## 8. 主要配置项（位于 rag_graph.py）
+## 8. 主要配置项（位于config.json）
 
-- `DATA_DIR`：本地知识目录（默认 `./my_knowledge`）
-- `PERSIST_DIR`：向量库目录（默认 `./chroma_db`）
-- `CHECKPOINT_FILE` / `CHECKPOINT_DB`：会话持久化目录与数据库文件
-- `SESSIONS_FILE`：会话摘要索引文件（默认 `./sessions.json`）
-- `LLM_MODEL`：默认 `qwen3:14b`
-- `EMBEDDING_MODEL`：默认 `qwen3-embedding:latest`
-
+```json
+{
+  "paths": {
+    "DATA_DIR": "./my_knowledge",                              // 原始知识库文件夹路径
+    "PERSIST_DIR": "./chroma_db",                              // 进行向量数据库持久化存储的文件夹路径
+    "CHECKPOINT_FILE": "chat_history",                         // 持久化对话历史记录的文件夹路径
+    "CHECKPOINT_DB": "chat_history/chat_checkpoints.db",       // 持久化对话历史记录的数据库文件路径
+    "SESSIONS_FILE": "./sessions.json",                        // 持久化对话会话记录的文件路径
+    "PROMPT_DIR": "prompts"                                    // 模板文件夹路径
+  },
+  "models": {
+    "LLM_MODEL": "deepseek-r1:8b",
+    "EMBEDDING_MODEL": "qwen3-embedding:latest"
+  },
+  "prompts": {
+    "SUMMARY_PROMPT_01": "summary_conversation_prompt_01.txt",
+    "SUMMARY_PROMPT_02": "summary_conversation_prompt_02.txt",
+    "SUMMARY_PROMPT_03": "generate_summary_to_save.txt",
+    "ANSWER_PROMPT": "answer_node.txt",
+    "FEEDBACK_PROMPT": "feedback_node.txt"
+  },
+  "parameters": {
+      "CHUNK_SIZE": 700,           // 文档切分时每个文本块的最大字符数（建议700-1000）
+      "CHUNK_OVERLAP": 100,        // 相邻两个文本块之间的重叠字符数，防止内容被切断
+    
+      "TOP_K": 5,                  // 每次检索返回的最相关文档块数量（越多越全面，但也越容易带噪声）
+      "SCORE_THRESHOLD": 0.65,     // 向量相似度阈值，只有高于此分数的文档才会被使用（越高越严格）
+    
+      "MAX_HISTORY_TOKENS": 6000,  // 允许保留的对话历史最大token数，超过会自动总结
+      "SUMMARY_INTERVAL": 6,       // 每隔多少轮对话进行一次自动总结（减少token消耗）
+    
+      "TEMPERATURE": 0.7,          // 温度参数：控制回答的创造性（0.0最保守，1.0最有创意）
+      "MAX_NEW_TOKENS": 2048,      // 模型单次回答允许生成的最大token数（约1500-1800汉字）
+    
+      "NUM_CTX": 16384,            // 模型支持的最大上下文长度（DeepSeek-R1 8B 推荐值）
+      "TOP_P": 0.9,                // 核采样参数，和temperature配合控制输出多样性
+      "REPEAT_PENALTY": 1.1,       // 重复惩罚系数，防止模型反复说同样的话（1.0=无惩罚）
+      "NUM_PREDICT": 2048,         // 等同于MAX_NEW_TOKENS，Ollama中常用此参数控制生成长度
+    
+      "DEBUG": false,              // 是否开启调试模式（True时会打印更多日志信息）
+      "LOG_LEVEL": "INFO"          // 日志级别：DEBUG / INFO / WARNING / ERROR
+  }
+}
+```
 ---
 
 ## 9. 知识库内容概览

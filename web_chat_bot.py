@@ -13,16 +13,18 @@ import json
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from contextlib import asynccontextmanager
 from langchain_core.messages import HumanMessage, AIMessage
+from config import Config
 
 
 # 模板目录（根据你的结构调整）
 BASE_DIR = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=BASE_DIR / "web" / "templates")  # 或 "templates"
+setting_config = Config()
+templates_path = os.path.join(BASE_DIR ,setting_config.paths["WEB_DIR"])
+templates = Jinja2Templates(directory=templates_path)
 
 # ================== 配置 ==================
-CHECKPOINT_FILE = "chat_history"
-CHECKPOINT_DB =os.path.join(CHECKPOINT_FILE,"chat_checkpoints.db")
-SESSIONS_FILE = "./sessions.json"   # 新增：会话索引文件
+CHECKPOINT_DB =setting_config.paths["CHECKPOINT_DB"]
+SESSIONS_FILE = setting_config.paths["SESSIONS_FILE"]
 
 # ================== 数据模型 ==================
 class ChatRequest(BaseModel):
@@ -247,6 +249,7 @@ async def chat(req: ChatRequest, request: Request):
             # 关键判断：检查这个 session 是否已经存在
             sessions = load_sessions()
             session_find_flag = False
+            session_id= user_msg.lower()
             for each_session in sessions:
                 if each_session['session_id'] == session_id:
                     session_summary = each_session["summary"]
